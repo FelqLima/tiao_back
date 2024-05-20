@@ -1,0 +1,573 @@
+PROJETO FULLSTACK COM LOGIN USANDO SPRING SECURITY + JWT | BACKEND
+Fernanda Kipper - https://www.youtube.com/watch?v=tJCyNV1G0P4 
+
+Acompanhando...
+
+1 - Criar projeto https://start.spring.io/
+
+	Adicionar dependências:
+
+	Spring Web (MVC Rest)
+	Spring Boot DevTools (Ajuda no desenvolvimento, reiniciar mais rápido e tal)
+	Spring Data JPA (Para mexer com banco)
+	Lombok (Facilitar get e set)
+	Spring Security
+	
+	Selecionar War por causa do TomCat
+	Selecionar Maven
+	Deixei selecionado java 17 msm
+	
+	
+2 - Abrir o projeto e Adicionar dependências no pom.xml
+
+	H2 (Banco de dados em memória)
+	JWT (Token para segurança)
+	
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.auth0</groupId>
+			<artifactId>java-jwt</artifactId>
+			<version>4.4.0</version>
+		</dependency>
+	
+	//	
+		<dependency>
+		   <groupId>mysql</groupId>
+		   <artifactId>mysql-connector-java</artifactId>
+		   <version>5.1.40</version>
+		</dependency>
+		<dependency>
+			<groupId>com.auth0</groupId>
+			<artifactId>java-jwt</artifactId>
+			<version>4.4.0</version>
+		</dependency>
+
+3.1 - Configurar banco de dados h2
+
+	Em application.properties:
+		
+		spring.datasource.url=jdbc:h2:mem:testdb
+		spring.datasource.driver-class-name=org.h2.Driver
+		spring.datasource.username=sa
+		spring.datasource.password=
+	
+	Se vc usar o .yml
+	
+	spring:
+	  datasource:
+		url: jdbc:h2:mem:testdb
+		driver-class-name: org.h2.Driver
+		username: sa
+		password:
+		
+3.2 - Configurar banco de dados mysql que nem em sala de aula
+
+	Em application.properties:
+
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+spring.datasource.url=jdbc:mysql://localhost:3306/tiaodb?createDatabaseIfNotExist=true
+spring.datasource.username=root
+spring.datasource.password=
+spring.datasource.driver-class-name=com.mysql.jdbc.Driver
+
+OBS: POR MOTIVOS DE SEGURANÇA, NÃO SE DECLARA LOGIN E SENHA ASSIM, NO REAL OFICIAL É MELHOR FAZER COM VARIÁVEIS DE AMBIENTE!
+
+------- A partir de agora, já pode testar lá o projeto executando o main.
+------- Estou usando o java 1.8 que nem usamos em sala
+
+4 - Criar classe de usuário
+
+	--- OBS: Tem que instalar o lombok, baixar no site deles... No vídeo que vi, usava IntelliJ e lá é só apertar um botão
+
+	package a sua escolha (projeto.model)
+	classe User
+	
+	Basicamente isso:
+	
+	@Entity
+	@Table(name="users")
+	@Getter
+	@Setter
+	@AllArgsConstructor
+	@NoArgsConstructor
+	public class User {
+
+		@Id
+		@GeneratedValue(strategy = GenerationType.UUID)
+		private String id;
+		private String name;
+		private String email;
+		private String password;
+	}
+	
+5 - Criar UserRepository
+
+	projeto.repositories 
+	UserRepository.java
+	
+	public interface UserRepository extends JpaRepository<User, String>{
+
+	}
+
+6.1 SEGURANÇA - Criar TokenService para geração e validação dos tokens
+
+Adicionar no application.properties
+	api.security.token.secret=security-token-tiao0020
+
+	OBS: POR MOTIVOS DE SEGURANÇA, NÃO SE DECLARA CHAVE DO TOKEN ASSIM, NO REAL OFICIAL É MELHOR FAZER COM VARIÁVEIS DE AMBIENTE!
+	
+	no package .security:
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import com.auth0.jwt.JWT;
+import com.auth0.jwt.algorithms.Algorithm;
+import com.auth0.jwt.exceptions.JWTCreationException;
+import com.auth0.jwt.exceptions.JWTVerificationException;
+
+import br.com.projetotiao.model.User;
+
+@Service
+public class TokenService {
+	
+	// String de segurança para criação do token
+	// Por motivos de segurança, utilizar 
+	//		variáveis de ambiente no application.properties
+	@Value("$api.security.token.secret")
+	private String secret;
+	
+	// Geração do token
+	public String generateToken(User user) {
+		try {
+			
+			Algorithm algorithm = Algorithm.HMAC256(secret);
+			
+			String token = JWT.create()
+						.withIssuer("projetotiao")
+						.withSubject(user.getEmail())
+						.withExpiresAt(generateExpirationDate())
+						.sign(algorithm);
+			
+			return token;
+			
+		} catch (JWTCreationException e) {
+			throw new RuntimeException("Error while authenticating");
+		}
+	}
+	// Método de validação do token
+	public String validadeToken(String token) {
+		try {
+			
+			Algorithm algorithm = Algorithm.HMAC256(secret);
+			
+			return JWT.require(algorithm)
+					.withIssuer("projetotiao")
+					.build()
+					.verify(token)
+					.getSubject();
+			
+		} catch (JWTVerificationException e) {
+			
+			// Vai cair no outro método como erro de autenticação.
+			return null;
+			
+		}
+	}
+	// Método de geração do tempo de expiração do token
+	private Instant generateExpirationDate() {
+		return LocalDateTime.now().plusHours(2).toInstant(ZoneOffset.ofHours(-3));
+	}
+}
+
+
+6.2 SEGURANÇA  - Criar o Security Filter para usar o token
+
+	no package .security:
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import br.com.projetotiao.model.User;
+import br.com.projetotiao.repositories.UserRepository;
+
+import java.io.IOException;
+import java.util.Collections;
+
+@Component
+public class SecurityFilter extends OncePerRequestFilter {
+    @Autowired
+    TokenService tokenService;
+    @Autowired
+    UserRepository userRepository;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
+        var token = this.recoverToken(request);
+        var login = tokenService.validadeToken(token);
+
+        if(login != null){
+            User user = userRepository.findByEmail(login).orElseThrow(() -> new RuntimeException("User Not Found"));
+            var authorities = Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER"));
+            var authentication = new UsernamePasswordAuthenticationToken(user, null, authorities);
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+        }
+        filterChain.doFilter(request, response);
+    }
+
+    private String recoverToken(HttpServletRequest request){
+        var authHeader = request.getHeader("Authorization");
+        if(authHeader == null) return null;
+        return authHeader.replace("Bearer ", "");
+    }
+}
+
+6.2.1 - Criar o findByEmail no UserRepository.java (pq usa ali em cima)
+
+método:
+	Optional<User> findByEmail(String email);
+	
+	(É só isso mesmo)
+	
+	// Por padrão, o JPA completa automaticamente um método de busca de coluna no banco 
+	//		se vc criar o findByColuna. Sendo o "Coluna" o nome da coluna no banco
+	
+	// O Optional é para trazer ou não um valor. se Objeto.isPresent() for true, é porque trouxe algum valor
+	
+	
+6.3 SEGURANÇA - Criar CustomUserDetailsService pro Spring consultar os usuários
+
+	no package .security:
+	
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.stereotype.Component;
+
+import br.com.projetotiao.model.User;
+import br.com.projetotiao.repositories.UserRepository;
+
+@Component
+public class CustomUserDetailsService implements UserDetailsService{
+
+	@Autowired
+	private UserRepository repository;
+	
+	@Override
+	public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+		
+		User user = this.repository.findByEmail(username).orElseThrow(() -> new UsernameNotFoundException("User not found"));
+		
+		return new org.springframework.security.core.userdetails.User(user.getEmail(), user.getPassword(), new ArrayList<>());
+	}
+
+}
+
+
+6.4 SEGURANÇA -  Criar o SecurityConfig para dar Start na parte de segurança
+
+	no package .security:
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Autowired
+    private CustomUserDetailsService userDetailsService;
+
+    @Autowired
+    SecurityFilter securityFilter;
+
+	// SessionCreationPolicy.STATELESS é para não guardar sessão em memória, ou seja...
+	// 		...toda requisição que exija autenticação, vai ter que ser autenticada
+	// Inclusive, atualmente é o padrão das API Restfull... Tem que ser stateless msm
+	
+	// .requestMatchers(HttpMethod.POST, "/auth/login").permitAll() -> Para permitir fazer login e registro...  
+	//		...sem precisar passar pela autenticação, já que vc não logou/registrou ainda pra ter autenticação
+	
+	// .anyRequest().authenticated() -> Qualquer outro link vai ter que ser autenticado.
+                        
+	// .addFilterBefore(securityFilter... -> Para ele fazer o Contexto de Segurança do SecurityFilter antes.
+	// Contexto de Segurança é tipo onde fica armazenado os dados de segurança que o Spring Security precisa para aquele usuário.	
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/register").permitAll()
+                        .anyRequest().authenticated()
+                )
+                .addFilterBefore(securityFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+
+	// Vai ser utilizado no controller para a senha
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+	// Necessário para o Spring Security funcionar.
+	// Bean é algo que vai ser gerenciado pelo Spring IoC (Inversion of Control)
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration authenticationConfiguration) throws Exception {
+        return authenticationConfiguration.getAuthenticationManager();
+    }
+}
+
+7.0 Controle de Login
+
+
+7.1 - Fazer os DTO no package .dto
+
+
+	// DTO "Data Transfer Object" São classes básicas para representar 
+	// record são 'classes' imutáveis que representam objetos simples que só precisam do tipo e nome dos atributos.
+	// 		aparentemente eles são bons para representar JSON, etc.
+	
+	// ENTAO!!! Quando eu digo que no controller, vai esperar um RegisterRequestDTO com String name, email e password...
+	//		O SPRING já traduz o JSON que vier para encaixar nesse DTO... Então o Front tem que vir com um JSON assim:
+	
+	{
+		"name" : "NomeDaPessoa",
+		"email" : "pessoa@gmail.com",
+		"password" : "passwordteste"
+	}
+
+public record LoginRequestDTO (String email, String password) {}
+
+public record RegisterRequestDTO(String name, String email, String password) {}
+
+public record ResponseDTO(String name, String Token) {}
+
+
+7.2 - Criar classe AuthController no package .controllers
+
+import java.util.Optional;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import br.com.projetotiao.dto.LoginRequestDTO;
+import br.com.projetotiao.dto.RegisterRequestDTO;
+import br.com.projetotiao.dto.ResponseDTO;
+import br.com.projetotiao.model.User;
+import br.com.projetotiao.repositories.UserRepository;
+import br.com.projetotiao.security.TokenService;
+import lombok.RequiredArgsConstructor;
+
+@RestController
+@RequestMapping("/auth")
+@RequiredArgsConstructor
+public class AuthController {
+	
+	private final UserRepository repository;
+	private final PasswordEncoder passwordEncoder;
+	private final TokenService tokenService;
+	
+	@PostMapping("/login")
+	public ResponseEntity login(@RequestBody LoginRequestDTO body) {
+		
+		User user = this.repository.findByEmail(body.email()).orElseThrow(
+				() -> new UsernameNotFoundException("User not found"));
+		
+		if (passwordEncoder.matches(body.password(), user.getPassword())) {
+			String token = this.tokenService.generateToken(user);
+			return ResponseEntity.ok(new ResponseDTO(user.getName(), token));
+		}
+		
+		return ResponseEntity.badRequest().build();
+	}
+	
+	@PostMapping("/register")
+	public ResponseEntity register(@RequestBody RegisterRequestDTO body) {
+		
+		// Procura se já tem alguém registrado com esse email
+		Optional<User> user = this.repository.findByEmail(body.email());
+		
+		// Se não existir usuário com esse email, registrar
+		if (user.isEmpty()) {
+			
+			User newUser = new User();
+			newUser.setName(body.name());
+			newUser.setEmail(body.email());
+			newUser.setPassword(this.passwordEncoder.encode(body.password()));
+			
+			this.repository.save(newUser);
+			
+			String token = this.tokenService.generateToken(newUser);
+			return ResponseEntity.ok(new ResponseDTO(newUser.getName(), token));
+		}
+		
+		return ResponseEntity.badRequest().build();
+	}	
+	
+}
+
+
+8.0 teste.. UserController no package .controllers
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/user")
+public class UserController {
+	
+	@GetMapping
+	public ResponseEntity<String> getUser(){
+		return ResponseEntity.ok("Sucesso!");
+	}
+}
+
+A partir de agora, se der play no arquivo Main, vai funcionar direitinho...
+
+	Depois ir no Insomnia ou Postman ou qualquer coisa que testa endpoint...
+
+		Teste 1 - Mandar requisição POST para http://localhost:8080/auth/register
+
+			Com um json representando o RegisterRequestDTO
+			
+			{
+				"name" : "felipe",
+				"email" : "felipe@felipe.com",
+				"password" : "passwordteste"
+			}
+			
+			ele deve retornar o json representando o ResponseDTO (name e Token) como o programado:
+
+			{
+				"name": "felipe",
+				"Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwcm9qZXRvdGlhbyIsInN1YiI6ImZlbGlwZUBmZWxpcGUuY29tIiwiZXhwIjoxNzE1MzA1NTQ3fQ.RONKXBMdrRKn2GVSAUsIV2NDTP4u30UpHQY-7i-2H44"
+			}
+			
+		Teste 2 - Mandar requisição GET para http://localhost:8080/user (O teste que fizemos ali)
+		
+			Requisição do tipo Auth, Bearer Token... Manda sem token pra testar... 
+				Vai dar 403 Forbidden
+				
+			Testar mandando Token retornado do register e prefix "Bearer"
+				Vai retornar a String "Sucesso!" que foi o que escreveu no teste do UserController
+		
+				
+		Teste 3 - Mandar requisição POST para http://localhost:8080/auth/login 
+		
+			Com o JSON representando o LoginRequestDTO (email e password)
+			
+				Deve retornar o json representando o ResponseDTO (name e Token) como o programado:
+				{
+					"name": "felipe",
+					"Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJwcm9qZXRvdGlhbyIsInN1YiI6ImZlbGlwZUBmZWxpcGUuY29tIiwiZXhwIjoxNzE1MzA2NTc3fQ.7KFNjzWmWEBdw_9UFfzUE2V9NVjw7dC0IF50_llUjNU"
+				}
+				
+
+9.0 Integrando com o front!! -
+
+	Tem que configurar o CORS para ativar requisições do link do seu front...
+	Então...
+	
+	Criar classe CorsConfig no package infra.cors
+	
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+@Configuration
+public class CorsConfig implements WebMvcConfigurer{
+
+	@Override
+	public void addCorsMappings(CorsRegistry registry) {
+		registry.addMapping("/**")
+				.allowedOrigins("http://localhost:4200")
+				.allowedMethods("GET","POST","DELETE","PUT");
+		
+	}
+}
+
+	Modificar o .allowedOrigins para o link do seu front.
+	Modificar o .allowedMethods para os métodos que ele usa... 
+		se só usar GET e POST, deixa só eles lá
+		
+		
+---- Aparentemente dá pra usar o Axios no React para simplificar os end-points
+		
+// Após o login, salvar o token  no localStorage (Uma das opções)
+localStorage.setItem('token', seuToken);
+		
+import axios from 'axios';
+
+// Configurando o cabeçalho padrão para todas as solicitações
+axios.defaults.headers.common['Authorization'] = 'Bearer ' + localStorage.getItem('token');
+//axios.defaults.headers.common['Authorization'] = `Bearer ${seuToken}`;
+
+// Função para buscar os dados do usuário
+async function fetchUserData(email) {
+  try {
+    const response = await axios.get(`https://exemplo.com/api/usuario?email=${email}`);
+
+    // Verificando se a solicitação foi bem-sucedida
+    if (response.status !== 200) {
+      throw new Error('Erro ao buscar dados do usuário');
+    }
+
+    // Retornando os dados do usuário
+    return response.data;
+  } catch (error) {
+    console.error('Erro:', error);
+    throw error;
+  }
+}
+
+// Exemplo de uso da função fetchUserData
+async function getUserDataAndNavigate(email) {
+  try {
+    const userData = await fetchUserData(email);
+    console.log('Dados do usuário:', userData);
+    // Redirecionar para a tela que mostra os dados do usuário
+  } catch (error) {
+    // Lidar com erros de solicitação
+  }
+}
